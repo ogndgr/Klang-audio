@@ -118,4 +118,8 @@ if args.contains("--run-headless") {
     RunLoop.main.run()
 }
 
-print("Klang (run via the app bundle for the menu bar UI)")
+import AppKit
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.run()

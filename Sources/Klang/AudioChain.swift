@@ -15,14 +15,15 @@ private func check(_ label: String, _ st: OSStatus) throws {
 
 /// Hosts the Headphone Lab effect on a single HALOutput AudioUnit running duplex
 /// on the aggregate device (BlackHole input + headphones output share one clock).
-/// The effect is a v2 AudioUnit rendered manually via AudioUnitRender; its input
-/// render callback is fed the captured system audio.
+/// The effect is instantiated via AVAudioUnit so we get both the v2 handle (for
+/// manual AudioUnitRender) and the v3 AUAudioUnit (for the plugin's view).
 final class AudioChain {
     private let sampleRate: Double
     private let maxFrames: UInt32 = 4096
 
     fileprivate var halUnit: AudioUnit?
     fileprivate var effectV2: AudioUnit?
+    private var avEffect: AVAudioUnit?
     fileprivate var captureABL: UnsafeMutableAudioBufferListPointer?
     private var started = false
     private var bypassed = false
@@ -30,7 +31,7 @@ final class AudioChain {
     init(sampleRate: Double) { self.sampleRate = sampleRate }
 
     var isRunning: Bool { started }
-    var effectAudioUnit: AudioUnit? { effectV2 }
+    var effectAU: AUAudioUnit? { avEffect?.auAudioUnit }
     var inputFormatDescription: String { "\(Int(sampleRate))Hz 2ch HAL duplex" }
 
     var bypass: Bool {
@@ -48,16 +49,31 @@ final class AudioChain {
                completion: @escaping (Result<Void, Error>) -> Void) {
         let procFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                        sampleRate: sampleRate, channels: 2, interleaved: false)!
-        do {
-            try configure(aggregateID: aggregateID, procFormat: procFormat, startIO: startIO)
-            completion(.success(()))
-        } catch {
-            stop()
-            completion(.failure(error))
+        let acd = AudioComponentDescription(
+            componentType: kAudioUnitType_Effect,
+            componentSubType: fourCC("BdHL"),
+            componentManufacturer: fourCC("Beyd"),
+            componentFlags: 0, componentFlagsMask: 0)
+
+        AVAudioUnit.instantiate(with: acd, options: []) { [weak self] avUnit, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let error = error { completion(.failure(error)); return }
+                guard let avUnit = avUnit else { completion(.failure(AudioChainError.effectNotFound)); return }
+                do {
+                    try self.configure(avEffect: avUnit, aggregateID: aggregateID,
+                                       procFormat: procFormat, startIO: startIO)
+                    completion(.success(()))
+                } catch {
+                    self.stop()
+                    completion(.failure(error))
+                }
+            }
         }
     }
 
-    private func configure(aggregateID: AudioDeviceID, procFormat: AVAudioFormat, startIO: Bool) throws {
+    private func configure(avEffect: AVAudioUnit, aggregateID: AudioDeviceID,
+                           procFormat: AVAudioFormat, startIO: Bool) throws {
         let u32 = UInt32(MemoryLayout<UInt32>.size)
         let cbSize = UInt32(MemoryLayout<AURenderCallbackStruct>.size)
         let asbdSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
@@ -74,17 +90,11 @@ final class AudioChain {
         }
         captureABL = abl
 
-        // --- Headphone Lab effect (v2), rendered manually ---
-        var fxDesc = AudioComponentDescription(
-            componentType: kAudioUnitType_Effect,
-            componentSubType: fourCC("BdHL"),
-            componentManufacturer: fourCC("Beyd"),
-            componentFlags: 0, componentFlagsMask: 0)
-        guard let fxComp = AudioComponentFindNext(nil, &fxDesc) else { throw AudioChainError.effectNotFound }
-        var fxUnit: AudioUnit?
-        try check("FX new", AudioComponentInstanceNew(fxComp, &fxUnit))
-        guard let fx = fxUnit else { throw AudioChainError.effectNotFound }
+        // --- Headphone Lab effect: v2 handle from the AVAudioUnit ---
+        self.avEffect = avEffect
+        let fx = avEffect.audioUnit
         effectV2 = fx
+        AudioUnitUninitialize(fx)   // ensure uninitialized so stream formats are settable
         try check("FX fmt in", AudioUnitSetProperty(fx, kAudioUnitProperty_StreamFormat,
             kAudioUnitScope_Input, 0, &asbd, asbdSize))
         try check("FX fmt out", AudioUnitSetProperty(fx, kAudioUnitProperty_StreamFormat,
@@ -149,11 +159,9 @@ final class AudioChain {
             halUnit = nil
         }
         started = false
-        if let fx = effectV2 {
-            AudioUnitUninitialize(fx)
-            AudioComponentInstanceDispose(fx)
-            effectV2 = nil
-        }
+        if let fx = effectV2 { AudioUnitUninitialize(fx) }
+        effectV2 = nil
+        avEffect = nil   // AVAudioUnit disposes the underlying AU
         if let cap = captureABL {
             for b in cap { free(b.mData) }
             free(cap.unsafeMutablePointer)
