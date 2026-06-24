@@ -29,6 +29,18 @@ final class AudioChain {
     fileprivate var captureABL: UnsafeMutableAudioBufferListPointer?
     private var started = false
 
+    // Diagnostics (written from the realtime thread; approximate by design).
+    fileprivate var dbgInCalls = 0
+    fileprivate var dbgOutCalls = 0
+    fileprivate var dbgInPeak: Float = 0
+    fileprivate var dbgOutPeak: Float = 0
+    fileprivate var dbgStatus: OSStatus = 0
+
+    func debugSnapshot() -> String {
+        String(format: "in:%d out:%d inPeak:%.4f outPeak:%.4f renderSt:%d",
+               dbgInCalls, dbgOutCalls, dbgInPeak, dbgOutPeak, Int(dbgStatus))
+    }
+
     init(sampleRate: Double) { self.sampleRate = sampleRate }
 
     var isRunning: Bool { started }
@@ -200,7 +212,21 @@ private func klangInputProc(_ refCon: UnsafeMutableRawPointer,
     let chain = Unmanaged<AudioChain>.fromOpaque(refCon).takeUnretainedValue()
     guard let hal = chain.halUnit, let cap = chain.captureABL else { return noErr }
     for i in 0..<cap.count { cap[i].mDataByteSize = frames * 4 }
-    return AudioUnitRender(hal, flags, ts, 1, frames, cap.unsafeMutablePointer)
+    let st = AudioUnitRender(hal, flags, ts, 1, frames, cap.unsafeMutablePointer)
+    chain.dbgInCalls &+= 1
+    if st == noErr { chain.dbgInPeak = peak(cap, frames: frames) }
+    return st
+}
+
+private func peak(_ abl: UnsafeMutableAudioBufferListPointer, frames: UInt32) -> Float {
+    var m: Float = 0
+    let n = Int(frames)
+    for b in abl {
+        guard let p = b.mData?.assumingMemoryBound(to: Float.self) else { continue }
+        var i = 0
+        while i < n { let v = Swift.abs(p[i]); if v > m { m = v }; i += 1 }
+    }
+    return m
 }
 
 private func klangOutputProc(_ refCon: UnsafeMutableRawPointer,
@@ -219,5 +245,8 @@ private func klangOutputProc(_ refCon: UnsafeMutableRawPointer,
     var f = flags.pointee
     let st = render(&f, ts, frames, 0, ioData, pull)
     flags.pointee = f
+    chain.dbgOutCalls &+= 1
+    chain.dbgStatus = st
+    chain.dbgOutPeak = peak(UnsafeMutableAudioBufferListPointer(ioData), frames: frames)
     return st
 }

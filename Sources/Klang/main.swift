@@ -2,6 +2,7 @@ import Foundation
 import KlangCore
 
 let args = CommandLine.arguments
+var gRetain: [Any] = []
 
 if args.contains("--list-devices") {
     let dm = DeviceManager()
@@ -90,6 +91,10 @@ if args.contains("--run-headless") {
             case .success:
                 dm.setDefaultOutput(bh.id)
                 print("running (\(chain.inputFormatDescription)) — play audio; Ctrl-C to stop.")
+                let t = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+                    print(chain.debugSnapshot())
+                }
+                gRetain.append(t)
             }
         }
         signal(SIGINT, SIG_IGN)
@@ -100,6 +105,7 @@ if args.contains("--run-headless") {
             print("\nrestored & stopped"); exit(0)
         }
         src.resume()
+        gRetain.append(src)
     }
     RunLoop.main.run()
 }
