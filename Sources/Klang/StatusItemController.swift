@@ -20,6 +20,10 @@ final class StatusItemController {
     }
 
     private func refresh() {
+        if !controller.isActive {
+            pluginWindow?.discard()   // effect instance is gone; its view is invalid
+            pluginWindow = nil
+        }
         updateIcon()
         rebuildMenu()
     }
@@ -85,7 +89,7 @@ final class StatusItemController {
 
     @objc private func openPluginUI() {
         guard let au = controller.effectAU else { return }
-        pluginWindow = PluginWindowController()
+        if pluginWindow == nil { pluginWindow = PluginWindowController() }
         pluginWindow?.show(for: au) { [weak self] in self?.controller.saveStateNow() }
     }
 
@@ -100,6 +104,7 @@ final class StatusItemController {
     }
 
     @objc private func quit() {
+        pluginWindow?.discard()
         controller.deactivate()
         NSApp.terminate(nil)
     }
