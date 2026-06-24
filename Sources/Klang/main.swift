@@ -37,6 +37,18 @@ func negotiatedRate(_ dm: DeviceManager, _ bh: AudioDeviceInfo, _ out: AudioDevi
     SampleRateNegotiator.bestCommonRate(preferred: 96000, bh.supportedRates, out.supportedRates) ?? 48000
 }
 
+if args.contains("--restore") {
+    // Recovery: force the system default output back to the physical headphones
+    // (use if a previous run left it stuck on BlackHole). No mic needed.
+    let dm = DeviceManager()
+    let list = dm.listDevices()
+    guard let out = DeviceMatcher.physicalOutput(in: list, excludingUID: nil),
+          let id = dm.deviceID(forUID: out.uid) else { print("no physical output found"); exit(1) }
+    dm.setDefaultOutput(id)
+    print("default output restored to:", out.name)
+    exit(0)
+}
+
 if args.contains("--test-halsetup") {
     // Validates the full HAL/effect configuration WITHOUT starting audio (no mic
     // capture, no output), so it can be run non-interactively to catch config bugs.
