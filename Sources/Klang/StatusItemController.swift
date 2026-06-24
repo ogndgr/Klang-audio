@@ -8,6 +8,10 @@ final class StatusItemController {
 
     func install() {
         controller.recoverIfNeeded()
+        controller.onSafety = { [weak self] reason in
+            self?.refresh()
+            self?.alert("⚠️ \(reason).\n\nKlang güvenlik için kapatıldı. DAW (Logic vb.) kullanırken Klang'ı kapalı tut; düzeltmeyi DAW içinde plugin olarak ekle.")
+        }
         controller.observeDeviceChanges { [weak self] in
             DispatchQueue.main.async { self?.refresh() }
         }

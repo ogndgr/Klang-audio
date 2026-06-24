@@ -17,7 +17,25 @@ final class AppController {
     private var savedOutput: AudioDeviceID?
     private(set) var prefs: Prefs
 
+    /// Called (on main) when a safety guard shuts the chain down. String = reason.
+    var onSafety: ((String) -> Void)?
+    private var watchdog: Timer?
+
     init() { prefs = PrefsStore.load(from: AppPaths.prefsURL(home: home)) }
+
+    private func startWatchdog() {
+        watchdog?.invalidate()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self = self, self.chain?.feedbackDetected == true else { return }
+            self.triggerSafety("Olası ses feedback'i algılandı")
+        }
+    }
+
+    private func triggerSafety(_ reason: String) {
+        guard isActive else { return }
+        deactivate()
+        onSafety?(reason)
+    }
 
     var isActive: Bool { chain?.isRunning ?? false }
     var effectAU: AUAudioUnit? { chain?.effectAU }
@@ -88,6 +106,7 @@ final class AppController {
                 case .success:
                     self.chain = chain
                     self.dm.setDefaultOutput(bh.id)
+                    self.startWatchdog()
                     completion(.success(()))
                 }
             }
@@ -95,6 +114,8 @@ final class AppController {
     }
 
     func deactivate() {
+        watchdog?.invalidate()
+        watchdog = nil
         if let saved = savedOutput { dm.setDefaultOutput(saved) }
         chain?.saveState(home: home)
         chain?.stop()
@@ -116,6 +137,16 @@ final class AppController {
                 if !stillThere { self.deactivate() }
             }
             handler()
+        }
+        // If something external (a DAW, the user) changes the system default
+        // output away from BlackHole while active, shut down to avoid feedback.
+        dm.onDefaultOutputChanged { [weak self] in
+            guard let self = self, self.isActive else { return }
+            let list = self.dm.listDevices()
+            if !self.isBlackHole(self.dm.defaultOutputDeviceID(), in: list) {
+                self.triggerSafety("Sistem ses çıkışı değişti (başka uygulama devraldı)")
+                handler()
+            }
         }
     }
 }

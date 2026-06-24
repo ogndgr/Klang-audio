@@ -28,9 +28,19 @@ final class AudioChain {
     private var started = false
     private var bypassed = false
 
-    init(sampleRate: Double) { self.sampleRate = sampleRate }
+    // Feedback guard: if output RMS stays abnormally high for ~0.4s, mute and flag.
+    fileprivate let loudLimit: Int
+    fileprivate var loudFrames = 0
+    fileprivate var feedbackTripped = false
+    fileprivate var emergencyMute = false
+
+    init(sampleRate: Double) {
+        self.sampleRate = sampleRate
+        self.loudLimit = Int(sampleRate * 0.4)
+    }
 
     var isRunning: Bool { started }
+    var feedbackDetected: Bool { feedbackTripped }
     var effectAU: AUAudioUnit? { avEffect?.auAudioUnit }
     var inputFormatDescription: String { "\(Int(sampleRate))Hz 2ch HAL duplex" }
 
@@ -202,6 +212,19 @@ final class AudioChain {
 
 // MARK: - Realtime C callbacks (no captured context; reach AudioChain via refCon)
 
+private func rmsLevel(_ abl: UnsafeMutableAudioBufferListPointer, frames: UInt32) -> Float {
+    var sum: Float = 0
+    var count = 0
+    let n = Int(frames)
+    for b in abl {
+        guard let p = b.mData?.assumingMemoryBound(to: Float.self) else { continue }
+        var i = 0
+        while i < n { let v = p[i]; sum += v * v; i += 1 }
+        count += n
+    }
+    return count > 0 ? (sum / Float(count)).squareRoot() : 0
+}
+
 /// HAL input available → render the captured samples into our capture buffer.
 private func klangInputProc(_ refCon: UnsafeMutableRawPointer,
                             _ flags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
@@ -250,5 +273,23 @@ private func klangOutputProc(_ refCon: UnsafeMutableRawPointer,
         }
         return noErr
     }
-    return AudioUnitRender(fx, flags, ts, 0, frames, ioData)
+    let outABL = UnsafeMutableAudioBufferListPointer(ioData)
+    // Once feedback has tripped, output silence until the main thread tears down.
+    if chain.emergencyMute {
+        for b in outABL { if let d = b.mData { memset(d, 0, Int(b.mDataByteSize)) } }
+        return noErr
+    }
+    let st = AudioUnitRender(fx, flags, ts, 0, frames, ioData)
+    // Feedback guard: sustained very-high output RMS → emergency mute + flag.
+    if rmsLevel(outABL, frames: frames) > 0.6 {
+        chain.loudFrames += Int(frames)
+        if chain.loudFrames > chain.loudLimit {
+            chain.feedbackTripped = true
+            chain.emergencyMute = true
+            for b in outABL { if let d = b.mData { memset(d, 0, Int(b.mDataByteSize)) } }
+        }
+    } else {
+        chain.loudFrames = 0
+    }
+    return st
 }

@@ -99,4 +99,9 @@ final class DeviceManager {
         var a = addr(kAudioHardwarePropertyDevices)
         AudioObjectAddPropertyListenerBlock(sys, &a, DispatchQueue.main) { _, _ in handler() }
     }
+
+    func onDefaultOutputChanged(_ handler: @escaping () -> Void) {
+        var a = addr(kAudioHardwarePropertyDefaultOutputDevice)
+        AudioObjectAddPropertyListenerBlock(sys, &a, DispatchQueue.main) { _, _ in handler() }
+    }
 }
