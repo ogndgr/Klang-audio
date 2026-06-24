@@ -27,7 +27,7 @@ final class AppController {
         watchdog?.invalidate()
         watchdog = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self = self, self.chain?.feedbackDetected == true else { return }
-            self.triggerSafety("Olası ses feedback'i algılandı")
+            self.triggerSafety("Possible audio feedback detected")
         }
     }
 
@@ -46,7 +46,7 @@ final class AppController {
     }
 
     var statusText: String {
-        guard isActive else { return "Pasif" }
+        guard isActive else { return "Inactive" }
         return "BlackHole → DT 990 Pro X · \(bypass ? "bypass" : "EQ")"
     }
 
@@ -144,7 +144,7 @@ final class AppController {
             guard let self = self, self.isActive else { return }
             let list = self.dm.listDevices()
             if !self.isBlackHole(self.dm.defaultOutputDeviceID(), in: list) {
-                self.triggerSafety("Sistem ses çıkışı değişti (başka uygulama devraldı)")
+                self.triggerSafety("System audio output changed (another app took over)")
                 handler()
             }
         }

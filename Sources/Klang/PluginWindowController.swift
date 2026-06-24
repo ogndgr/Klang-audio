@@ -68,7 +68,7 @@ final class PluginWindowController: NSObject, NSWindowDelegate {
 
     private static func fallbackView() -> NSView {
         let v = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 120))
-        let label = NSTextField(labelWithString: "Bu plugin bir görsel arayüz sağlamıyor.")
+        let label = NSTextField(labelWithString: "This plugin doesn't provide a visual interface.")
         label.frame = NSRect(x: 20, y: 50, width: 320, height: 20)
         v.addSubview(label)
         return v

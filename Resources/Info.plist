@@ -13,7 +13,7 @@
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Klang tüm sistem sesini BlackHole üzerinden okuyup beyerdynamic Headphone Lab düzeltmesini uygular. Bir input device okumak için mikrofon izni gerekir; gerçek mikrofonunuz kaydedilmez.</string>
+    <string>Klang reads all system audio through BlackHole and applies the beyerdynamic Headphone Lab correction. Microphone access is required to read an input device; your real microphone is never recorded.</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>

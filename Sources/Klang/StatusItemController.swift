@@ -10,7 +10,7 @@ final class StatusItemController {
         controller.recoverIfNeeded()
         controller.onSafety = { [weak self] reason in
             self?.refresh()
-            self?.alert("⚠️ \(reason).\n\nKlang güvenlik için kapatıldı. DAW (Logic vb.) kullanırken Klang'ı kapalı tut; düzeltmeyi DAW içinde plugin olarak ekle.")
+            self?.alert("⚠️ \(reason).\n\nKlang turned itself off for safety. Keep Klang off while using a DAW (Logic, etc.); add the correction as a plugin inside the DAW instead.")
         }
         controller.observeDeviceChanges { [weak self] in
             DispatchQueue.main.async { self?.refresh() }
@@ -35,7 +35,7 @@ final class StatusItemController {
     private func rebuildMenu() {
         let menu = NSMenu()
 
-        let toggle = NSMenuItem(title: controller.isActive ? "Aktif — kapat" : "Aç",
+        let toggle = NSMenuItem(title: controller.isActive ? "Active — turn off" : "Turn on",
                                 action: #selector(toggleActive), keyEquivalent: "")
         toggle.target = self
         menu.addItem(toggle)
@@ -48,13 +48,13 @@ final class StatusItemController {
 
         menu.addItem(.separator())
 
-        let pluginUI = NSMenuItem(title: "beyerdynamic Lab'i aç…",
+        let pluginUI = NSMenuItem(title: "Open beyerdynamic Lab…",
                                   action: #selector(openPluginUI), keyEquivalent: "")
         pluginUI.target = self
         pluginUI.isEnabled = controller.isActive
         menu.addItem(pluginUI)
 
-        let login = NSMenuItem(title: "Açılışta başlat", action: #selector(toggleLogin), keyEquivalent: "")
+        let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
         login.target = self
         login.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
         menu.addItem(login)
@@ -65,7 +65,7 @@ final class StatusItemController {
         status.isEnabled = false
         menu.addItem(status)
 
-        let quit = NSMenuItem(title: "Çıkış", action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
 
@@ -79,7 +79,7 @@ final class StatusItemController {
         } else {
             controller.activate { [weak self] result in
                 DispatchQueue.main.async {
-                    if case .failure(let e) = result { self?.alert("Açılamadı: \(e)") }
+                    if case .failure(let e) = result { self?.alert("Couldn't open: \(e)") }
                     self?.refresh()
                 }
             }
@@ -102,7 +102,7 @@ final class StatusItemController {
             if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }
             else { try SMAppService.mainApp.register() }
         } catch {
-            alert("Açılışta başlat ayarlanamadı: \(error.localizedDescription)")
+            alert("Couldn't set Open at Login: \(error.localizedDescription)")
         }
         rebuildMenu()
     }

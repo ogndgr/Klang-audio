@@ -23,13 +23,13 @@ open /Applications/Klang.app
 
 Click the menu-bar waveform icon:
 
-- **Aç** — start the correction. Grant the microphone prompt on first run (required
+- **Turn on** — start the correction. Grant the microphone prompt on first run (required
   to read an input device; your real mic is never recorded). All system audio is now
   EQ'd on your headphones.
 - **Bypass** — toggle the correction for A/B comparison.
-- **beyerdynamic Lab'i aç…** — open the plugin to change headphone model.
-- **Açılışta başlat** — register Klang as a login item.
-- **Çıkış** — restore normal audio and quit.
+- **Open beyerdynamic Lab…** — open the plugin to change headphone model.
+- **Open at Login** — register Klang as a login item.
+- **Quit** — restore normal audio and quit.
 
 ## How it works
 
@@ -83,3 +83,7 @@ recovery, paths) is unit-tested; the real-time audio path is verified manually.
 
 App state lives in `~/Library/Application Support/Klang/`
 (`prefs.json`, `headphonelab.fullstate.plist`).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
