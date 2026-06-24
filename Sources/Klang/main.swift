@@ -103,10 +103,6 @@ if args.contains("--run-headless") {
             case .success:
                 dm.setDefaultOutput(bh.id)
                 print("running (\(chain.inputFormatDescription)) — play audio; Ctrl-C to stop.")
-                let t = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-                    print(chain.debugSnapshot())
-                }
-                gRetain.append(t)
             }
         }
         signal(SIGINT, SIG_IGN)

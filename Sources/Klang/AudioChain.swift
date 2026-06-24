@@ -27,24 +27,11 @@ final class AudioChain {
     private var started = false
     private var bypassed = false
 
-    // Diagnostics (written from the realtime thread; approximate by design).
-    fileprivate var dbgInCalls = 0
-    fileprivate var dbgOutCalls = 0
-    fileprivate var dbgInPeak: Float = 0
-    fileprivate var dbgFxInPeak: Float = 0
-    fileprivate var dbgOutPeak: Float = 0
-    fileprivate var dbgStatus: OSStatus = 0
-
     init(sampleRate: Double) { self.sampleRate = sampleRate }
 
     var isRunning: Bool { started }
     var effectAudioUnit: AudioUnit? { effectV2 }
     var inputFormatDescription: String { "\(Int(sampleRate))Hz 2ch HAL duplex" }
-
-    func debugSnapshot() -> String {
-        String(format: "in:%d out:%d inPeak:%.4f fxIn:%.4f outPeak:%.4f renderSt:%d",
-               dbgInCalls, dbgOutCalls, dbgInPeak, dbgFxInPeak, dbgOutPeak, Int(dbgStatus))
-    }
 
     var bypass: Bool {
         get { bypassed }
@@ -146,8 +133,7 @@ final class AudioChain {
             kAudioUnitScope_Input, 0, &renderCB, cbSize))
         try check("HAL initialize", AudioUnitInitialize(hal))
 
-        // Re-apply bypass state to the fresh effect instance.
-        bypass = bypassed
+        bypass = bypassed   // re-apply to the fresh effect instance
 
         if startIO {
             try check("HAL start", AudioOutputUnitStart(hal))
@@ -206,17 +192,6 @@ final class AudioChain {
 
 // MARK: - Realtime C callbacks (no captured context; reach AudioChain via refCon)
 
-private func peak(_ abl: UnsafeMutableAudioBufferListPointer, frames: UInt32) -> Float {
-    var m: Float = 0
-    let n = Int(frames)
-    for b in abl {
-        guard let p = b.mData?.assumingMemoryBound(to: Float.self) else { continue }
-        var i = 0
-        while i < n { let v = Swift.abs(p[i]); if v > m { m = v }; i += 1 }
-    }
-    return m
-}
-
 /// HAL input available → render the captured samples into our capture buffer.
 private func klangInputProc(_ refCon: UnsafeMutableRawPointer,
                             _ flags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
@@ -226,10 +201,7 @@ private func klangInputProc(_ refCon: UnsafeMutableRawPointer,
     let chain = Unmanaged<AudioChain>.fromOpaque(refCon).takeUnretainedValue()
     guard let hal = chain.halUnit, let cap = chain.captureABL else { return noErr }
     for i in 0..<cap.count { cap[i].mDataByteSize = frames * 4 }
-    let st = AudioUnitRender(hal, flags, ts, 1, frames, cap.unsafeMutablePointer)
-    chain.dbgInCalls &+= 1
-    if st == noErr { chain.dbgInPeak = peak(cap, frames: frames) }
-    return st
+    return AudioUnitRender(hal, flags, ts, 1, frames, cap.unsafeMutablePointer)
 }
 
 /// Effect needs input → hand it the captured samples.
@@ -251,7 +223,6 @@ private func klangEffectInputProc(_ refCon: UnsafeMutableRawPointer,
             out[i].mData = cap[i].mData
         }
     }
-    chain.dbgFxInPeak = peak(out, frames: frames)
     return noErr
 }
 
@@ -269,9 +240,5 @@ private func klangOutputProc(_ refCon: UnsafeMutableRawPointer,
         }
         return noErr
     }
-    let st = AudioUnitRender(fx, flags, ts, 0, frames, ioData)
-    chain.dbgOutCalls &+= 1
-    chain.dbgStatus = st
-    chain.dbgOutPeak = peak(UnsafeMutableAudioBufferListPointer(ioData), frames: frames)
-    return st
+    return AudioUnitRender(fx, flags, ts, 0, frames, ioData)
 }
