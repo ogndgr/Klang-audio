@@ -32,4 +32,49 @@ if args.contains("--test-aggregate") {
     exit(0)
 }
 
+if args.contains("--run-headless") {
+    let dm = DeviceManager()
+    let agg = AggregateDevice()
+    let chain = AudioChain()
+
+    PermissionManager.ensureMic { granted in
+        guard granted else { print("mic permission denied"); exit(1) }
+        let list = dm.listDevices()
+        guard let bh = DeviceMatcher.blackHole(in: list),
+              let out = DeviceMatcher.physicalOutput(in: list, excludingUID: nil),
+              let outID = dm.deviceID(forUID: out.uid) else {
+            print("missing devices"); exit(1)
+        }
+        let rate = SampleRateNegotiator.bestCommonRate(preferred: 96000,
+                    bh.supportedRates, out.supportedRates) ?? 48000
+        dm.setNominalSampleRate(rate, deviceID: bh.id)
+        dm.setNominalSampleRate(rate, deviceID: outID)
+        print("using rate:", Int(rate))
+
+        guard let aggID = agg.create(AggregateSpec.make(outputUID: out.uid, inputUID: bh.uid)) else {
+            print("aggregate create failed"); exit(1)
+        }
+        let savedDefault = dm.defaultOutputDeviceID()
+        chain.start(aggregateID: aggID) { result in
+            switch result {
+            case .failure(let e): print("start failed:", e); agg.destroy(aggID); exit(1)
+            case .success:
+                dm.setDefaultOutput(bh.id)
+                print("engine input:", chain.inputFormatDescription)
+                print("running — playing audio now is EQ'd. Ctrl-C to stop.")
+            }
+        }
+        // Restore on Ctrl-C.
+        signal(SIGINT, SIG_IGN)
+        let src = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        src.setEventHandler {
+            dm.setDefaultOutput(savedDefault)
+            chain.stop(); agg.destroy(aggID)
+            print("\nrestored & stopped"); exit(0)
+        }
+        src.resume()
+    }
+    RunLoop.main.run()
+}
+
 print("Klang (run via the app bundle for the menu bar UI)")
