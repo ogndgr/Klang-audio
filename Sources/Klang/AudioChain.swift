@@ -2,7 +2,10 @@ import AVFoundation
 import AudioToolbox
 import KlangCore
 
-enum AudioChainError: Error { case instantiateFailed(OSStatus) }
+enum AudioChainError: Error {
+    case instantiateFailed(OSStatus)
+    case invalidInputFormat(rate: Double, channels: UInt32)
+}
 
 final class AudioChain {
     private let engine = AVAudioEngine()
@@ -23,12 +26,19 @@ final class AudioChain {
 
     func start(aggregateID: AudioDeviceID,
                completion: @escaping (Result<Void, Error>) -> Void) {
-        // Bind the engine's HAL IO unit to the aggregate (input + output).
+        // Bind the aggregate to BOTH the input and output HAL units. Binding only
+        // the output node leaves the input node on the default input device, so its
+        // format is mono mic / zero channels and connect() raises a SetFormat
+        // exception (the crash at connect: line ~50).
         var dev = aggregateID
+        let size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        if let inAU = engine.inputNode.audioUnit {
+            AudioUnitSetProperty(inAU, kAudioOutputUnitProperty_CurrentDevice,
+                                 kAudioUnitScope_Global, 0, &dev, size)
+        }
         if let outAU = engine.outputNode.audioUnit {
             AudioUnitSetProperty(outAU, kAudioOutputUnitProperty_CurrentDevice,
-                                 kAudioUnitScope_Global, 0,
-                                 &dev, UInt32(MemoryLayout<AudioDeviceID>.size))
+                                 kAudioUnitScope_Global, 0, &dev, size)
         }
 
         let acd = AudioComponentDescription(
@@ -46,9 +56,19 @@ final class AudioChain {
                 }
 
                 self.engine.attach(avUnit)
-                let fmt = self.engine.inputNode.inputFormat(forBus: 0)
-                self.engine.connect(self.engine.inputNode, to: avUnit, format: fmt)
-                self.engine.connect(avUnit, to: self.engine.mainMixerNode, format: fmt)
+                let inFmt = self.engine.inputNode.outputFormat(forBus: 0)
+                NSLog("Klang input format: \(inFmt.sampleRate) Hz, \(inFmt.channelCount) ch")
+                // Convert the crash into a clean, diagnosable failure: connect()
+                // raises an NSException (uncatchable in Swift) on an invalid format.
+                // The Headphone Lab AU is stereo. Anything other than 2 channels
+                // means the input bound to the wrong device (mono mic / no input).
+                guard inFmt.channelCount == 2, inFmt.sampleRate > 0 else {
+                    completion(.failure(AudioChainError.invalidInputFormat(
+                        rate: inFmt.sampleRate, channels: inFmt.channelCount)))
+                    return
+                }
+                self.engine.connect(self.engine.inputNode, to: avUnit, format: inFmt)
+                self.engine.connect(avUnit, to: self.engine.mainMixerNode, format: inFmt)
                 self.effect = avUnit
                 self.loadState(home: FileManager.default.homeDirectoryForCurrentUser)
 
