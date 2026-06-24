@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>Klang</string>
+    <key>CFBundleDisplayName</key><string>Klang</string>
+    <key>CFBundleIdentifier</key><string>com.ogundogru.klang</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleExecutable</key><string>Klang</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>LSUIElement</key><true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Klang tüm sistem sesini BlackHole üzerinden okuyup beyerdynamic Headphone Lab düzeltmesini uygular. Bir input device okumak için mikrofon izni gerekir; gerçek mikrofonunuz kaydedilmez.</string>
+    <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>

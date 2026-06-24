@@ -191,10 +191,12 @@ final class AudioChain {
         guard let data = try? Data(contentsOf: url),
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
               let dict = plist as? NSDictionary else { return }
-        var cf = dict as CFPropertyList
-        _ = AudioUnitSetProperty(fx, kAudioUnitProperty_ClassInfo,
-                                 kAudioUnitScope_Global, 0, &cf,
-                                 UInt32(MemoryLayout<CFPropertyList>.size))
+        var cfDict = dict as CFDictionary
+        _ = withUnsafePointer(to: &cfDict) {
+            AudioUnitSetProperty(fx, kAudioUnitProperty_ClassInfo,
+                                 kAudioUnitScope_Global, 0, $0,
+                                 UInt32(MemoryLayout<CFDictionary>.size))
+        }
     }
 }
 
