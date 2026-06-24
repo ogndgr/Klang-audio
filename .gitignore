@@ -1,0 +1,7 @@
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+Klang.app/
+*.dSYM/
+.DS_Store
