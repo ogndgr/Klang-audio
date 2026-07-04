@@ -1,7 +1,79 @@
+# ─────────────────────────────────────────────────────────────
+# Secrets & Apple signing material — NEVER commit these
+# (public repo: a leaked key/cert can be abused for signing/notarizing)
+# ─────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+AuthKey_*.p8
+*_asc_api_key.p8
+ExportOptions.plist
+exportOptions.plist
+fastlane/.env
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+secrets/
+*.secret
+credentials.json
+notarize.*.json
+
+# ─────────────────────────────────────────────────────────────
+# Swift Package Manager
+# ─────────────────────────────────────────────────────────────
 .build/
 .swiftpm/
+Package.resolved
+
+# ─────────────────────────────────────────────────────────────
+# Xcode
+# ─────────────────────────────────────────────────────────────
 *.xcodeproj
+*.xcworkspace
+!default.xcworkspace
 DerivedData/
-Klang.app/
+build/
+*.xcuserstate
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.xcarchive
+*.dSYM.zip
 *.dSYM/
+
+# ─────────────────────────────────────────────────────────────
+# Build products
+# ─────────────────────────────────────────────────────────────
+Klang.app/
+*.app.zip
+*.dmg
+*.pkg
+
+# ─────────────────────────────────────────────────────────────
+# macOS
+# ─────────────────────────────────────────────────────────────
 .DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+
+# ─────────────────────────────────────────────────────────────
+# Editors / tooling
+# ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*~
