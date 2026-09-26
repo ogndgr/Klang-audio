@@ -30,7 +30,8 @@ final class DeviceManager {
             name: stringProp(id, kAudioObjectPropertyName) ?? "Unknown",
             isInput: inCh > 0, isOutput: outCh > 0,
             isVirtual: isVirtual(id),
-            supportedRates: availableRates(id))
+            supportedRates: availableRates(id),
+            inputChannels: inCh)
     }
 
     private func channels(_ id: AudioDeviceID, _ scope: AudioObjectPropertyScope) -> Int {

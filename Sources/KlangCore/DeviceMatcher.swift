@@ -12,4 +12,13 @@ public enum DeviceMatcher {
             && $0.uid != excludingUID
         }
     }
+
+    /// Every physical output the user may target: real (non-virtual, non-aggregate)
+    /// outputs, excluding BlackHole and Klang's own aggregate (which is virtual).
+    public static func selectableOutputs(in devices: [AudioDeviceInfo]) -> [AudioDeviceInfo] {
+        devices.filter {
+            $0.isOutput && !$0.isVirtual
+            && !($0.name.lowercased().contains("blackhole"))
+        }
+    }
 }
