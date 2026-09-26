@@ -22,16 +22,14 @@ final class DeviceManager {
     }
 
     private func info(for id: AudioDeviceID) -> AudioDeviceInfo {
-        let inCh = channels(id, kAudioObjectPropertyScopeInput)
-        let outCh = channels(id, kAudioObjectPropertyScopeOutput)
-        return AudioDeviceInfo(
+        AudioDeviceInfo(
             id: id,
             uid: stringProp(id, kAudioDevicePropertyDeviceUID) ?? "",
             name: stringProp(id, kAudioObjectPropertyName) ?? "Unknown",
-            isInput: inCh > 0, isOutput: outCh > 0,
+            isInput: channels(id, kAudioObjectPropertyScopeInput) > 0,
+            isOutput: channels(id, kAudioObjectPropertyScopeOutput) > 0,
             isVirtual: isVirtual(id),
-            supportedRates: availableRates(id),
-            inputChannels: inCh)
+            supportedRates: availableRates(id))
     }
 
     private func channels(_ id: AudioDeviceID, _ scope: AudioObjectPropertyScope) -> Int {
@@ -84,16 +82,12 @@ final class DeviceManager {
         return id
     }
 
-    func setDefaultOutput(_ id: AudioDeviceID) {
-        var a = addr(kAudioHardwarePropertyDefaultOutputDevice)
-        var v = id
-        AudioObjectSetPropertyData(sys, &a, 0, nil, UInt32(MemoryLayout<AudioDeviceID>.size), &v)
-    }
-
-    func setNominalSampleRate(_ rate: Double, deviceID: AudioDeviceID) {
+    func nominalSampleRate(_ deviceID: AudioDeviceID) -> Double? {
         var a = addr(kAudioDevicePropertyNominalSampleRate)
-        var v = rate
-        AudioObjectSetPropertyData(deviceID, &a, 0, nil, UInt32(MemoryLayout<Double>.size), &v)
+        var v: Double = 0
+        var size = UInt32(MemoryLayout<Double>.size)
+        let st = AudioObjectGetPropertyData(deviceID, &a, 0, nil, &size, &v)
+        return st == noErr && v > 0 ? v : nil
     }
 
     func onDevicesChanged(_ handler: @escaping () -> Void) {

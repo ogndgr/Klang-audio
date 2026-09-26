@@ -10,10 +10,10 @@
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleExecutable</key><string>Klang</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
-    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>LSMinimumSystemVersion</key><string>14.2</string>
     <key>LSUIElement</key><true/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>Klang reads all system audio through BlackHole and applies the beyerdynamic Headphone Lab correction. Microphone access is required to read an input device; your real microphone is never recorded.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Klang reads system audio to apply the beyerdynamic Headphone Lab correction before it reaches your headphones. Nothing is recorded or stored.</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
