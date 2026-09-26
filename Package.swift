@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Klang",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("14.2")],
     targets: [
         .target(name: "KlangCore"),
         .executableTarget(name: "Klang", dependencies: ["KlangCore"]),

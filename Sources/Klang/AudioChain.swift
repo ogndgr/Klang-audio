@@ -23,7 +23,6 @@ func klangDbg(_ line: String) {
 
 enum AudioChainError: Error {
     case effectNotFound
-    case halNotFound
     case osStatus(String, OSStatus)
 }
 
@@ -31,51 +30,33 @@ private func check(_ label: String, _ st: OSStatus) throws {
     if st != noErr { throw AudioChainError.osStatus(label, st) }
 }
 
-/// Hosts the Headphone Lab effect on a single HALOutput AudioUnit running duplex
-/// on the aggregate device (BlackHole input + headphones output share one clock).
-/// The effect is instantiated via AVAudioUnit so we get both the v2 handle (for
-/// manual AudioUnitRender) and the v3 AUAudioUnit (for the plugin's view).
+/// Hosts the Headphone Lab effect on a plain device IOProc running on the aggregate
+/// (system-audio tap input + target output share one clock). AUHAL is deliberately not
+/// used: enabling its input triggers a microphone TCC check that zeroes the tap. The
+/// effect is instantiated via AVAudioUnit so the v2 handle can be rendered manually.
 final class AudioChain {
     private let sampleRate: Double
     private let maxFrames: UInt32 = 4096
 
-    fileprivate var halUnit: AudioUnit?
     fileprivate var effectV2: AudioUnit?
     private var avEffect: AVAudioUnit?
     fileprivate var captureABL: UnsafeMutableAudioBufferListPointer?
+    private var renderABL: UnsafeMutableAudioBufferListPointer?
+    private var sampleTime: Float64 = 0
+    private var deviceID: AudioDeviceID = 0
+    private var procID: AudioDeviceIOProcID?
     private var started = false
     private var bypassed = false
 
-    // Feedback guard: if output RMS stays abnormally high for ~0.4s, mute and flag.
-    fileprivate let loudLimit: Int
-    fileprivate var loudFrames = 0
-    fileprivate var feedbackTripped = false
-    fileprivate var emergencyMute = false
-
-    // TEMP diagnostics — RT thread writes, main thread reads. Racy-but-fine.
-    fileprivate var dbgInTick: UInt64 = 0
-    fileprivate var dbgOutTick: UInt64 = 0
-    fileprivate var dbgInRMS: Float = 0
-    fileprivate var dbgOutRMS: Float = 0
-    fileprivate var dbgRenderStatus: OSStatus = 0
-
     init(sampleRate: Double) {
         self.sampleRate = sampleRate
-        self.loudLimit = Int(sampleRate * 0.4)
     }
 
     var isRunning: Bool { started }
-    var feedbackDetected: Bool { feedbackTripped }
-    // TEMP diagnostics snapshot for the watchdog to log.
-    var debugLine: String {
-        String(format: "inTick=%llu inRMS=%.4f outTick=%llu outRMS=%.4f st=%d mute=%d",
-               dbgInTick, dbgInRMS, dbgOutTick, dbgOutRMS, Int(dbgRenderStatus), emergencyMute ? 1 : 0)
-    }
     /// The v2 handle used for both rendering and hosting the plugin UI (Cocoa UI).
     /// Requesting the v3 view controller instead disturbs the shared JUCE AU state
     /// and silences the v2 render path, so the v3 handle is deliberately never used.
     var renderAudioUnit: AudioUnit? { effectV2 }
-    var inputFormatDescription: String { "\(Int(sampleRate))Hz 2ch HAL duplex" }
 
     var bypass: Bool {
         get { bypassed }
@@ -89,10 +70,7 @@ final class AudioChain {
     }
 
     func start(aggregateID: AudioDeviceID, initialStateURL: URL?, startIO: Bool = true,
-               captureChannelOffset: Int = 0,
                completion: @escaping (Result<Void, Error>) -> Void) {
-        let procFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                       sampleRate: sampleRate, channels: 2, interleaved: false)!
         let acd = AudioComponentDescription(
             componentType: kAudioUnitType_Effect,
             componentSubType: fourCC("BdHL"),
@@ -105,10 +83,8 @@ final class AudioChain {
                 if let error = error { completion(.failure(error)); return }
                 guard let avUnit = avUnit else { completion(.failure(AudioChainError.effectNotFound)); return }
                 do {
-                    try self.configure(avEffect: avUnit, aggregateID: aggregateID,
-                                       procFormat: procFormat,
-                                       initialStateURL: initialStateURL, startIO: startIO,
-                                       captureChannelOffset: captureChannelOffset)
+                    try self.configureEffect(avUnit, initialStateURL: initialStateURL)
+                    try self.configureIO(aggregateID: aggregateID, startIO: startIO)
                     completion(.success(()))
                 } catch {
                     self.stop()
@@ -118,26 +94,23 @@ final class AudioChain {
         }
     }
 
-    private func configure(avEffect: AVAudioUnit, aggregateID: AudioDeviceID,
-                           procFormat: AVAudioFormat, initialStateURL: URL?,
-                           startIO: Bool, captureChannelOffset: Int) throws {
-        let u32 = UInt32(MemoryLayout<UInt32>.size)
-        let cbSize = UInt32(MemoryLayout<AURenderCallbackStruct>.size)
-        let asbdSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        var asbd = procFormat.streamDescription.pointee
-        let ctx = Unmanaged.passUnretained(self).toOpaque()
-
-        // --- capture buffer: 2 mono (non-interleaved) channels ---
-        let bytes = Int(maxFrames) * MemoryLayout<Float>.size
+    private static func makeStereoBuffers(frames: UInt32) -> UnsafeMutableAudioBufferListPointer {
+        let bytes = Int(frames) * MemoryLayout<Float>.size
         let abl = AudioBufferList.allocate(maximumBuffers: 2)
         for i in 0..<2 {
-            let mem = malloc(bytes)!
-            memset(mem, 0, bytes)
-            abl[i] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(bytes), mData: mem)
+            abl[i] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(bytes), mData: calloc(bytes, 1))
         }
-        captureABL = abl
+        return abl
+    }
 
-        // --- Headphone Lab effect: v2 handle from the AVAudioUnit ---
+    private func configureEffect(_ avEffect: AVAudioUnit, initialStateURL: URL?) throws {
+        let procFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                       sampleRate: sampleRate, channels: 2, interleaved: false)!
+        var asbd = procFormat.streamDescription.pointee
+        let asbdSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        captureABL = Self.makeStereoBuffers(frames: maxFrames)
+        renderABL = Self.makeStereoBuffers(frames: maxFrames)
+
         self.avEffect = avEffect
         let fx = avEffect.audioUnit
         effectV2 = fx
@@ -148,80 +121,147 @@ final class AudioChain {
             kAudioUnitScope_Output, 0, &asbd, asbdSize))
         var mfs = maxFrames
         try check("FX maxframes", AudioUnitSetProperty(fx, kAudioUnitProperty_MaximumFramesPerSlice,
-            kAudioUnitScope_Global, 0, &mfs, u32))
-        var fxInCB = AURenderCallbackStruct(inputProc: klangEffectInputProc, inputProcRefCon: ctx)
+            kAudioUnitScope_Global, 0, &mfs, UInt32(MemoryLayout<UInt32>.size)))
+        var fxInCB = AURenderCallbackStruct(inputProc: klangEffectInputProc,
+                                            inputProcRefCon: Unmanaged.passUnretained(self).toOpaque())
         try check("FX input cb", AudioUnitSetProperty(fx, kAudioUnitProperty_SetRenderCallback,
-            kAudioUnitScope_Input, 0, &fxInCB, cbSize))
+            kAudioUnitScope_Input, 0, &fxInCB, UInt32(MemoryLayout<AURenderCallbackStruct>.size)))
         try check("FX init", AudioUnitInitialize(fx))
         if let initialStateURL = initialStateURL { loadState(from: initialStateURL) }
-
-        // --- HALOutput IO unit on the aggregate ---
-        var halDesc = AudioComponentDescription(
-            componentType: kAudioUnitType_Output,
-            componentSubType: kAudioUnitSubType_HALOutput,
-            componentManufacturer: kAudioUnitManufacturer_Apple,
-            componentFlags: 0, componentFlagsMask: 0)
-        guard let comp = AudioComponentFindNext(nil, &halDesc) else { throw AudioChainError.halNotFound }
-        var unit: AudioUnit?
-        try check("HAL new", AudioComponentInstanceNew(comp, &unit))
-        guard let hal = unit else { throw AudioChainError.halNotFound }
-        halUnit = hal
-
-        var one: UInt32 = 1
-        try check("EnableIO input", AudioUnitSetProperty(hal, kAudioOutputUnitProperty_EnableIO,
-            kAudioUnitScope_Input, 1, &one, u32))
-        try check("EnableIO output", AudioUnitSetProperty(hal, kAudioOutputUnitProperty_EnableIO,
-            kAudioUnitScope_Output, 0, &one, u32))
-        var dev = aggregateID
-        try check("SetDevice", AudioUnitSetProperty(hal, kAudioOutputUnitProperty_CurrentDevice,
-            kAudioUnitScope_Global, 0, &dev, UInt32(MemoryLayout<AudioDeviceID>.size)))
-        try check("Format input(scope=output, el1)", AudioUnitSetProperty(hal, kAudioUnitProperty_StreamFormat,
-            kAudioUnitScope_Output, 1, &asbd, asbdSize))
-        // Pull BlackHole's 2 channels out of the aggregate's input stream. On a duplex
-        // target device (a USB interface with its own inputs) BlackHole's channels are
-        // offset past the target's inputs, so capturing the first two would grab the
-        // interface's mic, not the system audio. Map client ch [0,1] → device ch
-        // [offset, offset+1] (TN2091: channelMap[clientChannel] = deviceChannel).
-        var captureMap: [Int32] = [Int32(captureChannelOffset), Int32(captureChannelOffset + 1)]
-        try check("Input channel map", AudioUnitSetProperty(hal, kAudioOutputUnitProperty_ChannelMap,
-            kAudioUnitScope_Output, 1, &captureMap, UInt32(captureMap.count * MemoryLayout<Int32>.size)))
-        try check("Format output(scope=input, el0)", AudioUnitSetProperty(hal, kAudioUnitProperty_StreamFormat,
-            kAudioUnitScope_Input, 0, &asbd, asbdSize))
-        var mfs2 = maxFrames
-        try check("MaxFramesPerSlice", AudioUnitSetProperty(hal, kAudioUnitProperty_MaximumFramesPerSlice,
-            kAudioUnitScope_Global, 0, &mfs2, u32))
-        var inputCB = AURenderCallbackStruct(inputProc: klangInputProc, inputProcRefCon: ctx)
-        try check("SetInputCallback", AudioUnitSetProperty(hal, kAudioOutputUnitProperty_SetInputCallback,
-            kAudioUnitScope_Global, 0, &inputCB, cbSize))
-        var renderCB = AURenderCallbackStruct(inputProc: klangOutputProc, inputProcRefCon: ctx)
-        try check("SetRenderCallback", AudioUnitSetProperty(hal, kAudioUnitProperty_SetRenderCallback,
-            kAudioUnitScope_Input, 0, &renderCB, cbSize))
-        try check("HAL initialize", AudioUnitInitialize(hal))
-
         bypass = bypassed   // re-apply to the fresh effect instance
+    }
 
+    private func configureIO(aggregateID: AudioDeviceID, startIO: Bool) throws {
+        deviceID = aggregateID
+        try check("IOProc create", AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, nil) {
+            [unowned self] _, inData, _, outData, _ in
+            self.process(input: inData, output: outData)
+        })
+        restrictStreams()
         if startIO {
-            try check("HAL start", AudioOutputUnitStart(hal))
+            try check("IO start", AudioDeviceStart(aggregateID, procID))
             started = true
         }
     }
 
+    /// Open only the tap (the aggregate's last input stream) and the streams carrying
+    /// output channels 0/1. A target with its own inputs (USB interface) thus never has
+    /// its hardware inputs opened. Best effort: if the device refuses, every stream stays
+    /// on and `process` still picks the tap and the first two output channels.
+    private func restrictStreams() {
+        guard let procID = procID else { return }
+        let inputs = streamChannelCounts(kAudioObjectPropertyScopeInput)
+        let outputs = streamChannelCounts(kAudioObjectPropertyScopeOutput)
+        setStreamUsage(procID, kAudioObjectPropertyScopeInput,
+                       on: inputs.indices.map { $0 == inputs.count - 1 })
+        var firstChannel = 0
+        setStreamUsage(procID, kAudioObjectPropertyScopeOutput, on: outputs.map { n in
+            defer { firstChannel += n }
+            return firstChannel < 2
+        })
+    }
+
+    private func streamChannelCounts(_ scope: AudioObjectPropertyScope) -> [Int] {
+        var a = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
+                                           mScope: scope, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(deviceID, &a, 0, nil, &size) == noErr, size > 0 else { return [] }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size),
+                                                   alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(deviceID, &a, 0, nil, &size, raw) == noErr else { return [] }
+        return UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+            .map { Int($0.mNumberChannels) }
+    }
+
+    private func setStreamUsage(_ procID: AudioDeviceIOProcID, _ scope: AudioObjectPropertyScope, on: [Bool]) {
+        guard !on.isEmpty,
+              let flagsOffset = MemoryLayout<AudioHardwareIOProcStreamUsage>.offset(of: \.mStreamIsOn) else { return }
+        let size = flagsOffset + on.count * MemoryLayout<UInt32>.size
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: size,
+                                                   alignment: MemoryLayout<AudioHardwareIOProcStreamUsage>.alignment)
+        defer { raw.deallocate() }
+        let usage = raw.bindMemory(to: AudioHardwareIOProcStreamUsage.self, capacity: 1)
+        usage.pointee.mIOProc = unsafeBitCast(procID, to: UnsafeMutableRawPointer.self)
+        usage.pointee.mNumberStreams = UInt32(on.count)
+        let flags = (raw + flagsOffset).bindMemory(to: UInt32.self, capacity: on.count)
+        for (i, isOn) in on.enumerated() { flags[i] = isOn ? 1 : 0 }
+        var a = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyIOProcStreamUsage,
+                                           mScope: scope, mElement: kAudioObjectPropertyElementMain)
+        AudioObjectSetPropertyData(deviceID, &a, 0, nil, UInt32(size), raw)
+    }
+
+    // MARK: Realtime
+
+    /// Tap stream (interleaved) → capture buffers → Headphone Lab → output channels 0/1.
+    private func process(input: UnsafePointer<AudioBufferList>, output: UnsafeMutablePointer<AudioBufferList>) {
+        let outL = UnsafeMutableAudioBufferListPointer(output)
+        guard let fx = effectV2, let cap = captureABL, let ren = renderABL,
+              let tap = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input)).last,
+              let src = tap.mData?.assumingMemoryBound(to: Float.self), tap.mNumberChannels > 0 else {
+            silence(outL); return
+        }
+        let inCh = Int(tap.mNumberChannels)
+        let frames = Int(tap.mDataByteSize) / (inCh * MemoryLayout<Float>.size)
+        guard frames > 0, frames <= Int(maxFrames) else { silence(outL); return }
+
+        let capL = cap[0].mData!.assumingMemoryBound(to: Float.self)
+        let capR = cap[1].mData!.assumingMemoryBound(to: Float.self)
+        for i in 0..<frames {
+            capL[i] = src[i * inCh]
+            capR[i] = src[i * inCh + (inCh > 1 ? 1 : 0)]
+        }
+
+        for i in 0..<2 { ren[i].mDataByteSize = UInt32(frames * MemoryLayout<Float>.size) }
+        var flags = AudioUnitRenderActionFlags()
+        var ts = AudioTimeStamp()
+        ts.mSampleTime = sampleTime
+        ts.mFlags = .sampleTimeValid
+        sampleTime += Float64(frames)
+        guard AudioUnitRender(fx, &flags, &ts, 0, UInt32(frames), ren.unsafeMutablePointer) == noErr else {
+            silence(outL); return
+        }
+
+        let renL = ren[0].mData!.assumingMemoryBound(to: Float.self)
+        let renR = ren[1].mData!.assumingMemoryBound(to: Float.self)
+        var channel = 0
+        for b in outL {
+            let n = Int(b.mNumberChannels)
+            defer { channel += n }
+            guard n > 0, let dst = b.mData?.assumingMemoryBound(to: Float.self) else { continue }
+            let outFrames = min(frames, Int(b.mDataByteSize) / (n * MemoryLayout<Float>.size))
+            for c in 0..<n {
+                let g = channel + c
+                if g < 2 {
+                    let r = g == 0 ? renL : renR
+                    for i in 0..<outFrames { dst[i * n + c] = r[i] }
+                } else {
+                    for i in 0..<outFrames { dst[i * n + c] = 0 }
+                }
+            }
+        }
+    }
+
+    private func silence(_ abl: UnsafeMutableAudioBufferListPointer) {
+        for b in abl { if let d = b.mData { memset(d, 0, Int(b.mDataByteSize)) } }
+    }
+
     func stop() {
-        if let hal = halUnit {
-            if started { AudioOutputUnitStop(hal) }
-            AudioUnitUninitialize(hal)
-            AudioComponentInstanceDispose(hal)
-            halUnit = nil
+        if let procID = procID {
+            if started { AudioDeviceStop(deviceID, procID) }
+            AudioDeviceDestroyIOProcID(deviceID, procID)
+            self.procID = nil
         }
         started = false
         if let fx = effectV2 { AudioUnitUninitialize(fx) }
         effectV2 = nil
         avEffect = nil   // AVAudioUnit disposes the underlying AU
-        if let cap = captureABL {
-            for b in cap { free(b.mData) }
-            free(cap.unsafeMutablePointer)
-            captureABL = nil
+        for abl in [captureABL, renderABL].compactMap({ $0 }) {
+            for b in abl { free(b.mData) }
+            free(abl.unsafeMutablePointer)
         }
+        captureABL = nil
+        renderABL = nil
     }
 
     /// Snapshot the live effect's ClassInfo to `url` (the active profile's state file).
@@ -231,7 +271,6 @@ final class AudioChain {
         var size = UInt32(MemoryLayout<Unmanaged<CFPropertyList>?>.size)
         let getStatus = AudioUnitGetProperty(fx, kAudioUnitProperty_ClassInfo,
                                              kAudioUnitScope_Global, 0, &info, &size)
-        klangDbg("saveState ClassInfo get status=\(getStatus)")
         guard getStatus == noErr, let plist = info?.takeRetainedValue() else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
@@ -257,35 +296,7 @@ final class AudioChain {
     }
 }
 
-// MARK: - Realtime C callbacks (no captured context; reach AudioChain via refCon)
-
-private func rmsLevel(_ abl: UnsafeMutableAudioBufferListPointer, frames: UInt32) -> Float {
-    var sum: Float = 0
-    var count = 0
-    let n = Int(frames)
-    for b in abl {
-        guard let p = b.mData?.assumingMemoryBound(to: Float.self) else { continue }
-        var i = 0
-        while i < n { let v = p[i]; sum += v * v; i += 1 }
-        count += n
-    }
-    return count > 0 ? (sum / Float(count)).squareRoot() : 0
-}
-
-/// HAL input available → render the captured samples into our capture buffer.
-private func klangInputProc(_ refCon: UnsafeMutableRawPointer,
-                            _ flags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
-                            _ ts: UnsafePointer<AudioTimeStamp>,
-                            _ bus: UInt32, _ frames: UInt32,
-                            _ ioData: UnsafeMutablePointer<AudioBufferList>?) -> OSStatus {
-    let chain = Unmanaged<AudioChain>.fromOpaque(refCon).takeUnretainedValue()
-    guard let hal = chain.halUnit, let cap = chain.captureABL else { return noErr }
-    for i in 0..<cap.count { cap[i].mDataByteSize = frames * 4 }
-    let st = AudioUnitRender(hal, flags, ts, 1, frames, cap.unsafeMutablePointer)
-    chain.dbgInTick &+= 1
-    chain.dbgInRMS = rmsLevel(cap, frames: frames)
-    return st
-}
+// MARK: - Realtime C callback (no captured context; reach AudioChain via refCon)
 
 /// Effect needs input → hand it the captured samples.
 private func klangEffectInputProc(_ refCon: UnsafeMutableRawPointer,
@@ -307,43 +318,4 @@ private func klangEffectInputProc(_ refCon: UnsafeMutableRawPointer,
         }
     }
     return noErr
-}
-
-/// HAL needs output → render the effect into the output buffer.
-private func klangOutputProc(_ refCon: UnsafeMutableRawPointer,
-                             _ flags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
-                             _ ts: UnsafePointer<AudioTimeStamp>,
-                             _ bus: UInt32, _ frames: UInt32,
-                             _ ioData: UnsafeMutablePointer<AudioBufferList>?) -> OSStatus {
-    let chain = Unmanaged<AudioChain>.fromOpaque(refCon).takeUnretainedValue()
-    guard let fx = chain.effectV2, let ioData = ioData else {
-        if let ioData = ioData {
-            let abl = UnsafeMutableAudioBufferListPointer(ioData)
-            for b in abl { if let d = b.mData { memset(d, 0, Int(b.mDataByteSize)) } }
-        }
-        return noErr
-    }
-    let outABL = UnsafeMutableAudioBufferListPointer(ioData)
-    // Once feedback has tripped, output silence until the main thread tears down.
-    if chain.emergencyMute {
-        for b in outABL { if let d = b.mData { memset(d, 0, Int(b.mDataByteSize)) } }
-        return noErr
-    }
-    let st = AudioUnitRender(fx, flags, ts, 0, frames, ioData)
-    let outRMS = rmsLevel(outABL, frames: frames)
-    chain.dbgOutTick &+= 1
-    chain.dbgRenderStatus = st
-    chain.dbgOutRMS = outRMS
-    // Feedback guard: sustained very-high output RMS → emergency mute + flag.
-    if outRMS > 0.6 {
-        chain.loudFrames += Int(frames)
-        if chain.loudFrames > chain.loudLimit {
-            chain.feedbackTripped = true
-            chain.emergencyMute = true
-            for b in outABL { if let d = b.mData { memset(d, 0, Int(b.mDataByteSize)) } }
-        }
-    } else {
-        chain.loudFrames = 0
-    }
-    return st
 }

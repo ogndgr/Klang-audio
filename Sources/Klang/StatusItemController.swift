@@ -7,11 +7,6 @@ final class StatusItemController {
     private var pluginWindow: PluginWindowController?
 
     func install() {
-        controller.recoverIfNeeded()
-        controller.onSafety = { [weak self] reason in
-            self?.refresh()
-            self?.alert("⚠️ \(reason).\n\nKlang turned itself off for safety. Keep Klang off while using a DAW (Logic, etc.); add the correction as a plugin inside the DAW instead.")
-        }
         controller.observeDeviceChanges { [weak self] in
             DispatchQueue.main.async { self?.refresh() }
         }

@@ -36,4 +36,20 @@ final class PrefsTests: XCTestCase {
         XCTAssertEqual(p.outputUID, "OUT")
         XCTAssertEqual(p.deviceProfiles, [:])   // defaulted, not a decode failure
     }
+    func testLegacyJSONWithBlackHoleInputUIDStillDecodes() throws {
+        let url = tmp()
+        // A prefs.json written by the BlackHole-based versions.
+        try #"{"autoStart":false,"bufferFrames":256,"outputUID":"OUT","inputUID":"BlackHole2ch_UID","deviceProfiles":{"OUT":"p1"}}"#
+            .data(using: .utf8)!.write(to: url)
+        let p = PrefsStore.load(from: url)
+        XCTAssertEqual(p.outputUID, "OUT")
+        XCTAssertEqual(p.deviceProfiles, ["OUT": "p1"])
+    }
+
+    func testSavedJSONNoLongerCarriesInputUID() throws {
+        let url = tmp()
+        try PrefsStore.save(.defaults, to: url)
+        let json = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertFalse(json.contains("inputUID"))
+    }
 }
