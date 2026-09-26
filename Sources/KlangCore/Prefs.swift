@@ -5,9 +5,31 @@ public struct Prefs: Codable, Equatable {
     public var bufferFrames: Int
     public var outputUID: String?
     public var inputUID: String?
+    /// Maps a physical output device UID to the profile applied when it is the target.
+    public var deviceProfiles: [String: String]
+
+    public init(autoStart: Bool, bufferFrames: Int, outputUID: String?,
+                inputUID: String?, deviceProfiles: [String: String] = [:]) {
+        self.autoStart = autoStart
+        self.bufferFrames = bufferFrames
+        self.outputUID = outputUID
+        self.inputUID = inputUID
+        self.deviceProfiles = deviceProfiles
+    }
+
+    // Custom decode so an older prefs.json (written before deviceProfiles existed)
+    // upgrades in place instead of resetting every field to defaults.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        autoStart = try c.decodeIfPresent(Bool.self, forKey: .autoStart) ?? false
+        bufferFrames = try c.decodeIfPresent(Int.self, forKey: .bufferFrames) ?? 256
+        outputUID = try c.decodeIfPresent(String.self, forKey: .outputUID)
+        inputUID = try c.decodeIfPresent(String.self, forKey: .inputUID)
+        deviceProfiles = try c.decodeIfPresent([String: String].self, forKey: .deviceProfiles) ?? [:]
+    }
 
     public static let defaults = Prefs(autoStart: false, bufferFrames: 256,
-                                       outputUID: nil, inputUID: nil)
+                                       outputUID: nil, inputUID: nil, deviceProfiles: [:])
 }
 
 public enum PrefsStore {
